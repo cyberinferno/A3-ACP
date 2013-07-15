@@ -27,7 +27,7 @@ class Dbcalls extends CI_Model
 			else
 			{
 				$this->session->set_userdata('user', $username);
-				$ip = $_SERVER['REMOTE_ADDR'];
+				$ip = $this->session->userdata('ip_address');
 				$result1 = odbc_exec($this->con, "select ip, flamez_coins from AccountInfo where account = '$username'");
 				$present_ip = trim(odbc_result($result1,'ip'));
 				$flamez_coins = (int)odbc_result($result1, 'flamez_coins');
@@ -320,6 +320,7 @@ class Dbcalls extends CI_Model
 		{
 			$credits = $this->session->userdata('credits');
 			$credits_required = odbc_result($result, 'credits_required');
+			$coupon_used = odbc_result($result, 'coupon_code');
 			if($credits < $credits_required)
 			{
 				$this->session->set_userdata('deliver_items_error', 'Not enough credits');
@@ -398,14 +399,18 @@ class Dbcalls extends CI_Model
 						$sql2 = "update charac0 set m_body = '$newString' where c_id = '$char'";
 						$result2 = odbc_exec($this->con,$sql2);
 						$cdt = $this->get_current_datetime();
-						$ip = $_SERVER['REMOTE_ADDR'];
-						$sql3 = "insert into delivery_table(transaction_id, account_name, char_name, item_ids, delivery_time, credits_used, ip_address) values('$transaction_id', '$account', '$char', '$temp_ids', '$cdt', '$credits_required', '$ip')";
+						$ip = $this->session->userdata('ip_address');
+						if($coupon_used == 'NIL')
+							$sql3 = "insert into delivery_table(transaction_id, account_name, char_name, item_ids, delivery_time, credits_used, ip_address) values('$transaction_id', '$account', '$char', '$temp_ids', '$cdt', '$credits_required', '$ip')";
+						else
+							$sql3 = "insert into delivery_table(transaction_id, account_name, char_name, item_ids, delivery_time, credits_used, coupon_code, ip_address) values('$transaction_id', '$account', '$char', '$temp_ids', '$cdt', '$credits_required', '$coupon_used', '$ip')";
 						$result3 = odbc_exec($this->cones, $sql3);
 						$rcredits = $credits - $credits_required;
 						$this->session->set_userdata('credits', $rcredits);
 						$sql4 = "update credits_table set credits = $rcredits where char_name = '$char'";
 						$result4 = odbc_exec($this->cones, $sql4);
-						$this->clear_cart($char);
+						$sql6 = "delete from shopping_cart where char_name='$char'";
+						$result6 = odbc_exec($this->cones, $sql);
 						return true;
 					}
 				}
@@ -1483,7 +1488,7 @@ class Dbcalls extends CI_Model
 	public function create_transaction($char, $type)
 	{
 		$time_now = $this->get_current_datetime();
-		$ip = $_SERVER['REMOTE_ADDR'];
+		$ip = $this->session->userdata('ip_address');
 		$result = odbc_exec($this->conls, "select count(*) as num from transaction_log");
 		$num = odbc_result($result,'num');
 		$count = $num + 1;
@@ -1727,7 +1732,7 @@ class Dbcalls extends CI_Model
 				$result1 = odbc_exec($this->con, "update charac0 set m_body = '$newString' where c_id = '$char'");
 				if($result1)
 				{
-					$ip = $_SERVER['REMOTE_ADDR'];
+					$ip = $this->session->userdata('ip_address');
 					$ctime = $this->get_current_datetime();
 					$result2 = odbc_exec($this->con,"insert into Deals(deal_id,character ,item_name, item_code, flamez_coins, seller_ip, deal_time) values($count,'$char', '$name', '$icode', $flamez_coins, '$ip', '$ctime')");
 					if($this->config->item('logging'))
@@ -2062,7 +2067,7 @@ class Dbcalls extends CI_Model
 			if(odbc_num_rows($result1) == 0)
 			{
 				$date = $this->get_current_datetime();
-				$ip = $_SERVER['REMOTE_ADDR'];
+				$ip = $this->session->userdata('ip_address');
 				$act_id = substr(sha1(uniqid(rand(),true)), 0, 20);
 				$result2 = odbc_exec($this->con, "insert into AccountInfo(account,contact,name,email,ip,event_points,cevent_points,refresh_count,ref_add_allow,referer) values('$user','$contact','$name','$email','$ip',0,0,0,1,'NULL')");
 				$result3 = odbc_exec($this->con, "INSERT INTO account (c_id, c_sheadera, c_sheaderb, c_sheaderc, c_headera, c_headerb, c_headerc, d_cdate, d_udate, c_status, m_body, acc_status, salary, last_salary) VALUES ('$user', 'reserve', 'reserve', 'reserve', '$passwd', '$email', 'reserve', CONVERT(DATETIME, '$date', 102), CONVERT(DATETIME, '$date', 102), 'F', 'reserve', 'Normal', CONVERT(DATETIME, '$date', 102), CONVERT(DATETIME, '$date', 102))");

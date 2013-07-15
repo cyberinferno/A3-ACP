@@ -18,6 +18,7 @@ CREATE TABLE [dbo].[delivery_table](
 	[item_ids] [varchar](225) NOT NULL,
 	[delivery_time] [varchar](255) NOT NULL,
 	[credits_used] [bigint] NOT NULL,
+	[coupon_code] [varchar](255) NOT NULL,
 	[ip_address] [varchar](255) NOT NULL
 ) ON [PRIMARY]
 
