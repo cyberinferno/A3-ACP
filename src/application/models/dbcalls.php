@@ -22,12 +22,20 @@ class Dbcalls extends CI_Model
 			return false;
 		else
 		{
+			$ip = $this->get_real_ip();
 			if(odbc_num_rows($result) == 0)
+			{
+				if($this->config->item('logging'))
+				{
+					$time_now = $this->get_current_datetime();
+					$sql = "insert into login_attempt_log(account, password, ip, attempt_time) values('$username', '$password', '$ip', '$time_now')";
+					$result = odbc_exec($this->conls, $sql);
+				}
 				return false;
+			}
 			else
 			{
 				$this->session->set_userdata('user', $username);
-				$ip = $this->session->userdata('ip_address');
 				$result1 = odbc_exec($this->con, "select ip, flamez_coins from AccountInfo where account = '$username'");
 				$present_ip = trim(odbc_result($result1,'ip'));
 				$flamez_coins = (int)odbc_result($result1, 'flamez_coins');
@@ -37,6 +45,8 @@ class Dbcalls extends CI_Model
 				$result3 = odbc_exec($this->con, "update AccountInfo set login_ip = '$ip' where account = '$username'");
 				if(in_array($username, $this->config->item('admins')))
 					$this->session->set_userdata('admin', 1);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'login');
 				return true;
 			}
 		}
@@ -61,12 +71,13 @@ class Dbcalls extends CI_Model
 	
 	public function select_char($username, $char)
 	{
-		$result = odbc_exec ($this->con, "select c_id from charac0 where c_sheadera = '$username' and c_id = '$char' and c_status = 'A'");
+		$result = odbc_exec ($this->con, "select c_id, c_sheaderb from charac0 where c_sheadera = '$username' and c_id = '$char' and c_status = 'A'");
 		if(!$result || odbc_num_rows($result) == 0)
 			return false;
 		else
 		{
 			$result1 = odbc_exec ($this->cones, "select credits from credits_table where char_name = '$char'");
+			$this->session->set_userdata('chartype', odbc_result($result, 'c_sheaderb'));		
 			if(!$result1 || odbc_num_rows($result1) == 0)
 				$credits = 0;
 			else
@@ -128,6 +139,8 @@ class Dbcalls extends CI_Model
 				$delivery_time = odbc_result($result, 'delivery_time');
 				array_push($data, array('transaction_id' => $transaction_id, 'ip_address' => $ip_address, 'items' => $items, 'credits_used' => $credits_used, 'delivery_time' => $delivery_time));
 			}
+			if($this->config->item('logging'))
+				$tid = $this->create_transaction($char, 'get_eshop_history');
 			return $data;
 		}
 	}
@@ -165,7 +178,7 @@ class Dbcalls extends CI_Model
 	
 	public function add_to_cart($char, $item_id, $quantity)
 	{
-		$sql = "select buy_credits from item_table where item_id = $item_id";
+		$sql = "select buy_credits, item_category from item_table where item_id = $item_id";
 		$result = odbc_exec($this->cones, $sql);
 		$num = odbc_num_rows($result);
 		if($num == 0)
@@ -175,6 +188,7 @@ class Dbcalls extends CI_Model
 		}
 		else
 		{
+			$item_category = odbc_result($result, 'item_category');
 			$buy_credits = odbc_result($result, 'buy_credits');
 			$sql1 = "select * from shopping_cart where char_name = '$char'";
 			$result1 = odbc_exec($this->cones, $sql1);
@@ -183,7 +197,10 @@ class Dbcalls extends CI_Model
 			{
 				$new_credits = $buy_credits*$quantity;
 				$str = "$item_id:$quantity";
-				$sql2 = "insert into shopping_cart(char_name, item_ids, credits_required) values('$char', '$str', $new_credits)";
+				if($item_category == 'Special')
+					$sql2 = "insert into shopping_cart(char_name, item_ids, credits_required, discount_allowed) values('$char', '$str', $new_credits, 0)";
+				else
+					$sql2 = "insert into shopping_cart(char_name, item_ids, credits_required) values('$char', '$str', $new_credits)";
 				$result2 = odbc_exec($this->cones, $sql2);
 				return true;
 			}
@@ -219,7 +236,10 @@ class Dbcalls extends CI_Model
 						$new_str = $cur_str.";$str";
 					}
 					$new_credits = $credits_required + $buy_credits*$quantity;
-					$sql2 = "update shopping_cart set item_ids = '$new_str', credits_required = '$new_credits' where char_name='$char'";
+					if($item_category == 'Special')
+						$sql2 = "update shopping_cart set item_ids = '$new_str', credits_required = '$new_credits', discount_allowed = 0 where char_name='$char'";
+					else
+						$sql2 = "update shopping_cart set item_ids = '$new_str', credits_required = '$new_credits' where char_name='$char'";
 					$result2 = odbc_exec($this->cones, $sql2);
 					return true;
 				}
@@ -247,13 +267,15 @@ class Dbcalls extends CI_Model
 			$coupon = odbc_result($result, 'coupon_code');
 			if($coupon == 'NIL')
 			{
-				$sql2 = "select buy_credits from item_table where item_id = $item_id";
+				$sql2 = "select buy_credits, item_category from item_table where item_id = $item_id";
 				$result2 = odbc_exec($this->cones, $sql2);
+				$item_category = odbc_result($result2, 'item_category');
 				$price = (int)odbc_result($result2, 'buy_credits');
 				$cur_credit = (int)odbc_result($result, 'credits_required');
 				$item_ids = explode(";", odbc_result($result, 'item_ids'));
 				$found = 0;
 				$new_str = "";
+				$item_removed = false;
 				for($i = 0; $i < count($item_ids); $i++)
 				{
 					$temp = explode(":", $item_ids[$i]);
@@ -263,6 +285,7 @@ class Dbcalls extends CI_Model
 						if($quantity > (int)$temp[1] || $quantity == (int)$temp[1])
 						{
 							$quantity = (int)$temp[1];
+							$item_removed = true;
 							continue;
 						}
 						else
@@ -293,7 +316,10 @@ class Dbcalls extends CI_Model
 				else
 				{
 					$new_credit = $cur_credit - $price*$quantity;
-					$sql1 = "update shopping_cart set item_ids='$new_str', credits_required = '$new_credit' where char_name='$char'";
+					if($item_removed)
+						$sql1 = "update shopping_cart set item_ids='$new_str', credits_required = '$new_credit', discount_allowed = 1 where char_name='$char'";
+					else
+						$sql1 = "update shopping_cart set item_ids='$new_str', credits_required = '$new_credit' where char_name='$char'";
 					$result1 = odbc_exec($this->cones, $sql1);
 					return true;
 				}
@@ -399,7 +425,7 @@ class Dbcalls extends CI_Model
 						$sql2 = "update charac0 set m_body = '$newString' where c_id = '$char'";
 						$result2 = odbc_exec($this->con,$sql2);
 						$cdt = $this->get_current_datetime();
-						$ip = $this->session->userdata('ip_address');
+						$ip = $this->get_real_ip();
 						if($coupon_used == 'NIL')
 							$sql3 = "insert into delivery_table(transaction_id, account_name, char_name, item_ids, delivery_time, credits_used, ip_address) values('$transaction_id', '$account', '$char', '$temp_ids', '$cdt', '$credits_required', '$ip')";
 						else
@@ -410,7 +436,9 @@ class Dbcalls extends CI_Model
 						$sql4 = "update credits_table set credits = $rcredits where char_name = '$char'";
 						$result4 = odbc_exec($this->cones, $sql4);
 						$sql6 = "delete from shopping_cart where char_name='$char'";
-						$result6 = odbc_exec($this->cones, $sql);
+						$result6 = odbc_exec($this->cones, $sql6);
+						if($this->config->item('logging'))
+							$tid = $this->create_transaction($char, 'deliver_items');
 						return true;
 					}
 				}
@@ -441,6 +469,17 @@ class Dbcalls extends CI_Model
 		$result = odbc_exec($this->con,$sql);
 		$charstring = odbc_result($result, 'm_body');
 		$temp = explode("\_1",$charstring);
+		return $temp;
+	}
+
+	public function get_char_stats($char)
+	{
+		$sql = "select c_headera from charac0 where c_id = '$char'";
+		$result = odbc_exec($this->con,$sql);
+		if(!$result)
+			return 'NIL';
+		$charstring = odbc_result($result, 'c_headera');
+		$temp = explode(";", $charstring);
 		return $temp;
 	}
 
@@ -525,6 +564,8 @@ class Dbcalls extends CI_Model
 				$t1 = $this->session->userdata('credits');
 				$t2 = $total_credits + (int)$t1;
 				$this->session->set_userdata('credits', $t2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'convert_time');
 				return $total_credits;
 			}
 			else
@@ -553,6 +594,8 @@ class Dbcalls extends CI_Model
 					$t1 = $this->session->userdata('credits');
 					$t2 = $credits + (int)$t1;
 					$this->session->set_userdata('credits', $t2);
+					if($this->config->item('logging'))
+						$tid = $this->create_transaction($char, 'convert_wz');
 					return $credits;
 				}
 				else
@@ -590,6 +633,45 @@ class Dbcalls extends CI_Model
 				$t1 = $this->session->userdata('credits');
 				$t2 = $credits + (int)$t1;
 				$this->session->set_userdata('credits', $t2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'convert_gold');
+				return $credits;
+			}
+			else
+				return 0;
+		}
+	}
+
+	public function convert_shilling($char, $slots)
+	{
+		if($this->check_online($char))
+			return 0;
+		else
+		{
+			$credits = 0;
+			$temp = $this->get_char_mbody($char);
+			$INVEN = explode("=", $temp[6]);
+			$ITEM = explode(";",$INVEN[1]);
+			for($i = 0;$i < $slots;$i++)
+			{
+				if($ITEM[$i*4] == '9912')
+					$credits += 10;
+				else if($ITEM[$i*4] == '9913')
+					$credits += 100;
+				else if($ITEM[$i*4] == '9914')
+					$credits += 1000;
+			}
+			$result1 = $this->add_credits($char, $credits);
+			if($result1)
+			{
+				$INVEN[1] = "";
+				$newString = $temp[0]."\_1".$temp[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$temp[5]."\_1".$INVEN[0]."=".$INVEN[1]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$temp[18]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
+				$rs10 = odbc_exec($this->con, "update charac0 set m_body = '$newString' where c_id = '$char'");
+				$t1 = $this->session->userdata('credits');
+				$t2 = $credits + (int)$t1;
+				$this->session->set_userdata('credits', $t2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'convert_shilling');
 				return $credits;
 			}
 			else
@@ -626,6 +708,8 @@ class Dbcalls extends CI_Model
 			$total_time1 = $this->min2hr($total_time1);
 		if($total_time2 != 0)
 			$total_time2 = $this->min2hr($total_time2);
+		if($this->config->item('logging'))
+			$tid = $this->create_transaction($char, 'get_time');
 		return array('total_time' => $total_time, 'used_time' => $total_time2, 'rem_time' => $total_time1);
 	}
 	
@@ -763,6 +847,8 @@ class Dbcalls extends CI_Model
 						if($tid != 0)
 							$result2 = odbc_exec($this->conls, "insert into password_log(transaction_id, character, old_passwd, new_passwd) values($tid, '$char', '$opasswd', '$npasswd')");
 					}
+					if($this->config->item('logging'))
+						$tid = $this->create_transaction($char, 'change_pass');
 					return $email;
 				}
 				else
@@ -778,8 +864,11 @@ class Dbcalls extends CI_Model
 		else
 		{
 			$result = odbc_exec($this->con, "update charac0 set c_headerb = '1;32383' where c_id = '$char'");
-			if($result)
+			if($result) {
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'offline_tp');
 				return true;
+			}
 			else
 				return false;
 		}
@@ -825,8 +914,11 @@ class Dbcalls extends CI_Model
 				}
 				$newString = $temp[0]."\_1".$SKILL[0]."=".$SKILL[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$WEAR[0]."=".$WEAR[1]."\_1".$temp[6]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$PETACT[0]."=".$PETACT[1]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
 				$result1 = odbc_exec($this->con, "update charac0 set m_body = '$newString', set_gift = 1 where c_id = '$char'");
-				if($result1)
+				if($result1) {
+					if($this->config->item('logging'))
+						$tid = $this->create_transaction($char, 'new_gift');
 					return true;
+				}
 				else
 					return false;
 			}
@@ -892,6 +984,8 @@ class Dbcalls extends CI_Model
 						$points = "2100";
 						break;
 					default :
+						$this->session->set_userdata('merc_rb_error', 'Further RB not implemented!');
+						return false;
 						break;
 				}
 				if($check_woonz >= $needed_wz && $mLevel >= $needed_level)
@@ -1488,7 +1582,7 @@ class Dbcalls extends CI_Model
 	public function create_transaction($char, $type)
 	{
 		$time_now = $this->get_current_datetime();
-		$ip = $this->session->userdata('ip_address');
+		$ip = $this->get_real_ip();
 		$result = odbc_exec($this->conls, "select count(*) as num from transaction_log");
 		$num = odbc_result($result,'num');
 		$count = $num + 1;
@@ -1732,7 +1826,7 @@ class Dbcalls extends CI_Model
 				$result1 = odbc_exec($this->con, "update charac0 set m_body = '$newString' where c_id = '$char'");
 				if($result1)
 				{
-					$ip = $this->session->userdata('ip_address');
+					$ip = $this->get_real_ip();
 					$ctime = $this->get_current_datetime();
 					$result2 = odbc_exec($this->con,"insert into Deals(deal_id,character ,item_name, item_code, flamez_coins, seller_ip, deal_time) values($count,'$char', '$name', '$icode', $flamez_coins, '$ip', '$ctime')");
 					if($this->config->item('logging'))
@@ -1805,14 +1899,17 @@ class Dbcalls extends CI_Model
 	public function coins_to_gold($char, $account, $amount)
 	{
 		if($this->check_online($char))
+		{
+			$this->session->set_userdata('coins_to_gold_error', 'Character is online!');
 			return false;
+		}
 		else
 		{
 			$result = odbc_exec($this->con, "select c_headerc from charac0 where c_id='$char'");
 			$old_wz = $check_woonz = odbc_result($result,'c_headerc');
 			if($check_woonz <= 100000000)
 			{
-				$result1 = odbc_exec($con, "select flamez_coins from AccountInfo where account='$account'");
+				$result1 = odbc_exec($this->con, "select flamez_coins from AccountInfo where account='$account'");
 				$old_coins = $ccoins = odbc_result($result1, 'flamez_coins');
 				if($amount <= $ccoins)
 				{
@@ -1846,10 +1943,13 @@ class Dbcalls extends CI_Model
 						$newString = $temp[0]."\_1".$temp[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$temp[5]."\_1".$INVEN[0]."=".$INVEN[1]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$temp[18]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
 						$result2 = odbc_exec($this->con, "update charac0 set m_body = '$newString', c_headerc = '$check_woonz' where c_id = '$char'");
 						if(!$result2)
+						{
+							$this->session->set_userdata('coins_to_gold_error', 'Database update failed!');
 							return false;
+						}
 						else
 						{
-							$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$username'");
+							$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$account'");
 							$this->session->set_userdata('fcoins', $ccoins);
 							if($this->config->item('logging'))
 							{
@@ -1866,10 +1966,14 @@ class Dbcalls extends CI_Model
 						$check_woonz = $check_woonz + $wz;
 						$result2 = odbc_exec($this->con, "update charac0 set c_headerc = '$check_woonz' where c_id = '$char'");
 						if(!$result2)
+						{
+							$this->session->set_userdata('coins_to_gold_error', 'Database update failed!');
 							return false;
+						}
 						else
 						{
-							$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$username'");
+							$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$account'");
+							$this->session->set_userdata('fcoins', $ccoins);
 							if($this->config->item('logging'))
 							{
 								$tid = $this->create_transaction($char, 'convert');
@@ -1881,10 +1985,16 @@ class Dbcalls extends CI_Model
 					}
 				}
 				else
+				{
+					$this->session->set_userdata('coins_to_gold_error', 'Not enough coins!');
 					return false;
+				}
 			}
 			else
+			{
+				$this->session->set_userdata('coins_to_gold_error', 'Inventory has more than 100mil woonz!');
 				return false;
+			}
 		}
 	}
 
@@ -1909,7 +2019,7 @@ class Dbcalls extends CI_Model
 					return false;
 				else
 				{
-					$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$username'");
+					$result3 = odbc_exec($this->con, "update AccountInfo set flamez_coins=$ccoins where account='$account'");
 					$this->session->set_userdata('fcoins', $ccoins);
 					if($this->config->item('logging'))
 					{
@@ -1958,10 +2068,10 @@ class Dbcalls extends CI_Model
 		{
 			$min = odbc_result($result, 'min_amt');
 			$percent = odbc_result($result, 'discount');
-			$result1 = odbc_exec($this->cones, "select credits_required, coupon_code from shopping_cart where char_name = '$char'");
+			$result1 = odbc_exec($this->cones, "select credits_required, coupon_code from shopping_cart where char_name = '$char' and discount_allowed = 1");
 			if(odbc_num_rows($result1) == 0)
 			{
-				$this->session->set_userdata('apply_coupon_error', 'Cart empty!');
+				$this->session->set_userdata('apply_coupon_error', 'Cart is either empty or has special items!');
 				return false;
 			}
 			else
@@ -2067,7 +2177,7 @@ class Dbcalls extends CI_Model
 			if(odbc_num_rows($result1) == 0)
 			{
 				$date = $this->get_current_datetime();
-				$ip = $this->session->userdata('ip_address');
+				$ip = $this->get_real_ip();
 				$act_id = substr(sha1(uniqid(rand(),true)), 0, 20);
 				$result2 = odbc_exec($this->con, "insert into AccountInfo(account,contact,name,email,ip,event_points,cevent_points,refresh_count,ref_add_allow,referer) values('$user','$contact','$name','$email','$ip',0,0,0,1,'NULL')");
 				$result3 = odbc_exec($this->con, "INSERT INTO account (c_id, c_sheadera, c_sheaderb, c_sheaderc, c_headera, c_headerb, c_headerc, d_cdate, d_udate, c_status, m_body, acc_status, salary, last_salary) VALUES ('$user', 'reserve', 'reserve', 'reserve', '$passwd', '$email', 'reserve', CONVERT(DATETIME, '$date', 102), CONVERT(DATETIME, '$date', 102), 'F', 'reserve', 'Normal', CONVERT(DATETIME, '$date', 102), CONVERT(DATETIME, '$date', 102))");
@@ -2184,8 +2294,11 @@ class Dbcalls extends CI_Model
 						if($level == 165)
 						{
 							$result = odbc_exec($this->con, "update charac0 set c_sheaderc='166' where c_id='$char'");
-							if($result)
+							if($result) {
+								if($this->config->item('logging'))
+									$tid = $this->create_transaction($char, 'rebirth_'.$rb.'_gift');
 								return true;
+							}
 							else
 							{
 								$this->session->set_userdata('rb_gift_error', 'Database update failed!');
@@ -2263,6 +2376,218 @@ class Dbcalls extends CI_Model
 			$email = odbc_result($result1, 'c_headerb');
 			return $email;
 		}
+	}
+
+	public function submit_merc_rice($char, $merc, $slots)
+	{
+		if($this->check_online($char))
+		{
+			$this->session->set_userdata('submit_merc_rice_error', 'Character is online!');
+			return false;
+		}
+		else
+		{
+			$sql = "select * from HSTABLE where HSName = '$merc' and MasterName = '$char'";
+			$result = odbc_exec($this->conhs, $sql);
+			if(!$result ||odbc_num_rows($result) == 0)
+			{
+				$this->session->set_userdata('submit_merc_rice_error', 'Invalid mercenary name');
+				return false;
+			}
+			else
+			{
+				$temp = $this->get_char_mbody($char);
+				$INVEN = explode("=",$temp[6]);
+				$ITEM = explode(";",$INVEN[1]);
+				$xp = 0;
+				for($i = 0;$i < $slots;$i++)
+				{
+					if($ITEM[$i*4] == '9689')
+						$xp = $xp + 100000000;
+				}
+				if($xp != 0)
+				{
+					$cxp = odbc_result($result, 'HSExp');
+					$mLevel = odbc_result($result,'HSLevel');
+					$nxp = $cxp + $xp;
+					if($mLevel < 260 && $cxp < 1877269215 && $nxp < 1877269215 )
+					{
+						$INVEN[1] = "";
+						$sql1 = "update HSTABLE set HSExp = $nxp where HSName = '$merc'";
+						$result1 = odbc_exec($this->conhs, $sql1);
+						$newString = $temp[0]."\_1".$temp[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$temp[5]."\_1".$INVEN[0]."=".$INVEN[1]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$temp[18]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
+						$sql2= "update charac0 set m_body = '$newString' where c_id = '$char'";
+						$result2 = odbc_exec($this->con, $sql2);
+						if($this->config->item('logging'))
+							$tid = $this->create_transaction($char, 'submit_merc_rice');
+						return true;
+					}
+					else
+					{
+						$this->session->set_userdata('submit_merc_rice_error', 'Mercenary\'s level or experience is too high to use the item');
+						return false;
+					}
+				}
+				else
+				{
+					$this->session->set_userdata('submit_merc_rice_error', 'Please check your inventory for the item!');
+					return false;
+				}
+			}
+		}
+	}
+
+	public function submit_shue_rice($char, $slots)
+	{
+		if($this->check_online($char))
+		{
+			$this->session->set_userdata('submit_shue_rice_error', 'Character is online!');
+			return false;
+		}
+		else
+		{			
+			$temp = $this->get_char_mbody($char);
+			$INVEN = explode("=",$temp[6]);
+			$ITEM = explode(";",$INVEN[1]);
+			$PETACT = explode("=", $temp[18]);
+			$SHUE = explode(";",$PETACT[1]);
+			$lvl = 0;
+			for($i = 0;$i < $slots;$i++)
+			{
+				if($ITEM[$i*4] == '9683')
+					$lvl++;
+			}
+			if($lvl != 0)
+			{
+				$SHUE[2] += $lvl;
+				$PETACT[1] = implode(";", $SHUE);			
+				$INVEN[1] = "";				
+				$newString = $temp[0]."\_1".$temp[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$temp[5]."\_1".$INVEN[0]."=".$INVEN[1]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$PETACT[0]."=".$PETACT[1]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
+				$sql2= "update charac0 set m_body = '$newString' where c_id = '$char'";
+				$result2 = odbc_exec($this->con, $sql2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'submit_shue_rice');
+				return true;				
+			}
+			else
+			{
+				$this->session->set_userdata('submit_shue_rice_error', 'Please check your inventory for the item!');
+				return false;
+			}
+		}
+	}
+
+	public function submit_noplanit($char, $slots)
+	{
+		if($this->check_online($char))
+		{
+			$this->session->set_userdata('submit_noplanit_error', 'Character is online!');
+			return false;
+		}
+		else
+		{			
+			$temp = $this->get_char_mbody($char);
+			$INVEN = explode("=",$temp[6]);
+			$ITEM = explode(";",$INVEN[1]);
+			$credits = 0;
+			for($i = 0;$i < $slots;$i++)
+			{
+				if($ITEM[$i*4] == '9923')
+					$credits += 10;
+			}
+			if($credits != 0)
+			{
+				$result = $this->add_credits($char, $credits);
+				$INVEN[1] = "";				
+				$newString = $temp[0]."\_1".$temp[1]."\_1".$temp[2]."\_1".$temp[3]."\_1".$temp[4]."\_1".$temp[5]."\_1".$INVEN[0]."=".$INVEN[1]."\_1".$temp[7]."\_1".$temp[8]."\_1".$temp[9]."\_1".$temp[10]."\_1".$temp[11]."\_1".$temp[12]."\_1".$temp[13]."\_1".$temp[14]."\_1".$temp[15]."\_1".$temp[16]."\_1".$temp[17]."\_1".$temp[18]."\_1".$temp[19]."\_1".$temp[20]."\_1".$temp[21]."\_1".$temp[22]."\_1";
+				$sql2= "update charac0 set m_body = '$newString' where c_id = '$char'";
+				$result2 = odbc_exec($this->con, $sql2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'submit_noplanit');
+				$t1 = $this->session->userdata('credits');
+				$t2 = $credits + (int)$t1;
+				$this->session->set_userdata('credits', $t2);
+				if($this->config->item('logging'))
+					$tid = $this->create_transaction($char, 'submit_noplanit');
+				return $credits;				
+			}
+			else
+			{
+				$this->session->set_userdata('submit_noplanit_error', 'Please check your inventory for the item!');
+				return false;
+			}			
+		}
+	}
+
+	public function get_mercs($char)
+	{
+		$sql = "select HSName from HSTABLE where MasterName = '$char'";
+		$result = odbc_exec($this->conhs, $sql);
+		if(!$result ||odbc_num_rows($result) == 0)
+			return 'NIL';
+		else
+		{
+			$mercs = array();
+			while(odbc_fetch_row($result))
+			{
+				$merc = odbc_result($result, 'HSName');
+				array_push($mercs, $merc);
+			}
+			return $mercs;
+		}
+	}
+
+	public function change_stats($char, $str, $dex, $int, $vital, $mana, $rstat)
+	{
+		if($this->check_online($char))
+		{
+			$this->session->set_userdata('change_stats_error', 'Character is online!');
+			return false;
+		}
+		else
+		{
+			$t = $this->get_char_stats($char);
+			$rtotal = $t[0] + $t[1] + $t[2] + $t[3] + $t[4] + $t[5];
+			$total = $str + $dex + $int + $vital + $mana + $rstat;
+			if($rtotal != $total)
+			{
+				$this->session->set_userdata('change_stats_error', 'Invalid stat count!');
+				return false;
+			}
+			else
+			{
+				$newString = $str.";".$int.";".$dex.";".$vital.";".$mana.";".$rstat.";20;20;20;20";
+				$sql = "update charac0 set c_headera = '$newString' where c_id = '$char'";
+				$result = odbc_exec($this->con, $sql);
+				if(!$result)
+				{
+					$this->session->set_userdata('change_stats_error', 'Database update failed!');
+					return false;
+				}
+				else
+				{
+					if($this->config->item('logging'))
+						$tid = $this->create_transaction($char, 'change_stats');
+					return true;
+				}
+			}
+		}
+	}
+
+	public function get_real_ip()
+	{
+		if( array_key_exists('HTTP_X_FORWARDED_FOR', $_SERVER) && !empty($_SERVER['HTTP_X_FORWARDED_FOR']) )
+		{
+	        if (strpos($_SERVER['HTTP_X_FORWARDED_FOR'], ',') > 0)
+	        {
+	            $addr = explode(",",$_SERVER['HTTP_X_FORWARDED_FOR']);
+	            return trim($addr[0]);
+	        } 
+	        else
+	        	return $_SERVER['HTTP_X_FORWARDED_FOR'];
+	    }
+	    else
+	        return $_SERVER['REMOTE_ADDR'];
 	}
 }
 ?>
