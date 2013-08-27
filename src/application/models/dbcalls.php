@@ -17,7 +17,7 @@ class Dbcalls extends CI_Model
 	
 	public function check_login($username, $password)
 	{
-		$result = odbc_exec ($this->con, "select * from account where c_id = '$username' and c_headera = '$password'");
+		$result = odbc_exec ($this->con, "select * from account where c_id = '$username' and c_headera = '$password' and c_status = 'A'");
 		if(!$result)
 			return false;
 		else
@@ -546,6 +546,9 @@ class Dbcalls extends CI_Model
 	public function convert_time($char)
 	{
 		$result = odbc_exec($this->con, "select * from onlinerecords where charname='$char' and used = 0");
+		$result1 = odbc_exec($this->con, "select rb from charac0 where c_id='$char' and CAST(rb as int) > 4");
+		if(odbc_num_rows($result1) == 0)
+			return 0;
 		$total_time = 0;
 		while(odbc_fetch_row($result))
 		{
